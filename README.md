@@ -81,11 +81,6 @@ service cloud.firestore {
 
 ## Admin Login
 
-| Field    | Value           |
-|----------|-----------------|
-| Username | `admin`         |
-| Password | `sivakasi@2024` |
-
 Admin contact phone (shown to buyers): `7904216920`
 
 Change these in `index.html` around line 30.
