@@ -1,0 +1,915 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sivakasi Advertisements – Properties & Services</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link href="https://fonts.googleapis.com/css2?family=Playfair+Display:wght@700;900&family=DM+Sans:wght@300;400;500;600&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.0/css/all.min.css" />
+
+  <!-- Firebase SDK -->
+  <script type="module">
+    import { initializeApp } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-app.js";
+    import {
+      getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, where, orderBy, serverTimestamp
+    } from "https://www.gstatic.com/firebasejs/10.12.2/firebase-firestore.js";
+
+    // ─── REPLACE WITH YOUR FIREBASE CONFIG ──────────────────────────────────────
+    const firebaseConfig = {
+      apiKey: "YOUR_API_KEY",
+      authDomain: "YOUR_PROJECT_ID.firebaseapp.com",
+      projectId: "YOUR_PROJECT_ID",
+      storageBucket: "YOUR_PROJECT_ID.appspot.com",
+      messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
+      appId: "YOUR_APP_ID"
+    };
+    // ────────────────────────────────────────────────────────────────────────────
+
+    const app = initializeApp(firebaseConfig);
+    const db = getFirestore(app);
+
+    // ── Admin credentials (hardcoded) ────────────────────────────────────────────
+    const ADMIN_PHONE = "7904216920";
+    const ADMIN_USERNAME = "admin";
+    const ADMIN_PASSWORD = "sivakasi@2024";
+    // ────────────────────────────────────────────────────────────────────────────
+
+    // ── App State ────────────────────────────────────────────────────────────────
+    let currentUser = null;
+    let isAdmin = false;
+    let allProperties = [];
+    let filteredProperties = [];
+
+    // ── Toast ────────────────────────────────────────────────────────────────────
+    function toast(msg, type = "success") {
+      const t = document.getElementById("toast");
+      t.textContent = msg;
+      t.className = `fixed bottom-6 left-1/2 -translate-x-1/2 z-[999] px-6 py-3 rounded-full text-white font-medium text-sm shadow-2xl transition-all duration-300 ${type === "error" ? "bg-red-600" : "bg-emerald-600"}`;
+      t.style.opacity = "1";
+      setTimeout(() => { t.style.opacity = "0"; }, 3000);
+    }
+
+    // ── Pages ────────────────────────────────────────────────────────────────────
+    function showPage(id) {
+      document.querySelectorAll(".page").forEach(p => p.classList.add("hidden"));
+      const pg = document.getElementById(id);
+      if (pg) { pg.classList.remove("hidden"); window.scrollTo(0,0); }
+    }
+
+    // ── Update nav ───────────────────────────────────────────────────────────────
+    function updateNav() {
+      document.getElementById("navGuest").classList.toggle("hidden", !!currentUser || isAdmin);
+      document.getElementById("navUser").classList.toggle("hidden", !currentUser || isAdmin);
+      document.getElementById("navAdmin").classList.toggle("hidden", !isAdmin);
+      if (currentUser) document.getElementById("navUserName").textContent = currentUser.name;
+    }
+
+    // ── USER LOGIN ────────────────────────────────────────────────────────────────
+    window.loginUser = async function() {
+      const name = document.getElementById("loginName").value.trim();
+      const phone = document.getElementById("loginPhone").value.trim();
+      if (!name || phone.length < 10) { toast("Enter valid name and 10-digit mobile", "error"); return; }
+      try {
+        const q = query(collection(db,"users"), where("phone","==",phone));
+        const snap = await getDocs(q);
+        if (snap.empty) {
+          await addDoc(collection(db,"users"), { name, phone, createdAt: serverTimestamp() });
+        }
+        currentUser = { name, phone };
+        localStorage.setItem("sivaUser", JSON.stringify(currentUser));
+        updateNav();
+        toast(`Welcome, ${name}!`);
+        showPage("pageHome");
+        loadProperties();
+      } catch(e) { toast("Login failed: "+e.message,"error"); }
+    };
+
+    // ── USER LOGOUT ───────────────────────────────────────────────────────────────
+    window.logoutUser = function() {
+      currentUser = null;
+      localStorage.removeItem("sivaUser");
+      updateNav();
+      showPage("pageLogin");
+    };
+
+    // ── ADMIN LOGIN ───────────────────────────────────────────────────────────────
+    window.loginAdmin = function() {
+      const u = document.getElementById("adminUser").value.trim();
+      const p = document.getElementById("adminPass").value.trim();
+      if (u === ADMIN_USERNAME && p === ADMIN_PASSWORD) {
+        isAdmin = true;
+        updateNav();
+        toast("Admin login successful");
+        showPage("pageAdmin");
+        loadAdminData();
+      } else {
+        toast("Invalid admin credentials","error");
+      }
+    };
+
+    window.logoutAdmin = function() {
+      isAdmin = false;
+      updateNav();
+      showPage("pageHome");
+    };
+
+    // ── POST PROPERTY ─────────────────────────────────────────────────────────────
+    window.postProperty = async function() {
+      if (!currentUser) { toast("Please login first","error"); return; }
+      const title    = document.getElementById("propTitle").value.trim();
+      const desc     = document.getElementById("propDesc").value.trim();
+      const price    = document.getElementById("propPrice").value.trim();
+      const location = document.getElementById("propLocation").value.trim();
+      const category = document.getElementById("propCategory").value;
+      const listType = document.getElementById("propListType").value;
+      const ownerPhone = currentUser.phone;
+      if (!title||!desc||!price||!location) { toast("Fill all fields","error"); return; }
+      try {
+        await addDoc(collection(db,"properties"), {
+          title, desc, price, location, category, listType,
+          ownerPhone, ownerName: currentUser.name,
+          createdAt: serverTimestamp(), active: true
+        });
+        toast("Property posted successfully!");
+        document.getElementById("propForm").reset();
+        showPage("pageHome");
+        loadProperties();
+      } catch(e) { toast("Error: "+e.message,"error"); }
+    };
+
+    // ── LOAD PROPERTIES ───────────────────────────────────────────────────────────
+    async function loadProperties() {
+      const container = document.getElementById("propCards");
+      container.innerHTML = `<div class="col-span-full text-center py-16 text-amber-700"><i class="fas fa-spinner fa-spin text-3xl"></i><p class="mt-3 font-medium">Loading listings…</p></div>`;
+      try {
+        const snap = await getDocs(collection(db,"properties"));
+        allProperties = [];
+        snap.forEach(d => allProperties.push({ id: d.id, ...d.data() }));
+        allProperties.sort((a,b) => (b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
+        filteredProperties = [...allProperties];
+        renderProperties(filteredProperties);
+      } catch(e) {
+        container.innerHTML = `<div class="col-span-full text-center py-16 text-red-600"><i class="fas fa-exclamation-triangle text-3xl"></i><p class="mt-3">Failed to load: ${e.message}</p><p class="text-sm mt-1 text-gray-500">Check your Firebase config.</p></div>`;
+      }
+    }
+
+    function renderProperties(list) {
+      const container = document.getElementById("propCards");
+      if (!list.length) {
+        container.innerHTML = `<div class="col-span-full text-center py-16 text-gray-400"><i class="fas fa-building text-5xl opacity-30"></i><p class="mt-4 text-lg">No listings found</p></div>`;
+        return;
+      }
+      const catIcon = { land:"fa-mountain-sun", house:"fa-house", office:"fa-briefcase", factory:"fa-industry" };
+      const catColor = { land:"bg-green-100 text-green-700", house:"bg-blue-100 text-blue-700", office:"bg-purple-100 text-purple-700", factory:"bg-orange-100 text-orange-700" };
+      container.innerHTML = list.map(p => `
+        <div class="prop-card bg-white rounded-2xl shadow-md hover:shadow-xl transition-all duration-300 overflow-hidden border border-amber-100 group">
+          <div class="h-44 bg-gradient-to-br ${p.listType==='rent'?'from-sky-400 to-indigo-500':'from-amber-400 to-rose-500'} relative flex items-center justify-center">
+            <i class="fas ${catIcon[p.category]||'fa-building'} text-white text-5xl opacity-70 group-hover:scale-110 transition-transform duration-300"></i>
+            <span class="absolute top-3 left-3 text-xs font-bold uppercase tracking-wider px-3 py-1 rounded-full ${p.listType==='rent'?'bg-sky-900 text-sky-200':'bg-rose-900 text-rose-200'}">${p.listType==='rent'?'🏠 Rent':'🏷 Sale'}</span>
+            <span class="absolute top-3 right-3 text-xs font-semibold uppercase tracking-wide px-3 py-1 rounded-full ${catColor[p.category]||'bg-gray-100 text-gray-700'}">${p.category}</span>
+          </div>
+          <div class="p-5">
+            <h3 class="font-bold text-gray-900 text-lg leading-tight line-clamp-1">${p.title}</h3>
+            <p class="text-gray-500 text-sm mt-1 line-clamp-2">${p.desc}</p>
+            <div class="flex items-center gap-1 mt-3 text-amber-700 text-sm font-medium">
+              <i class="fas fa-location-dot text-xs"></i> ${p.location}
+            </div>
+            <div class="flex items-center justify-between mt-4">
+              <span class="text-xl font-black text-amber-700">₹${Number(p.price).toLocaleString('en-IN')}</span>
+              <button onclick="getOwnerContact('${p.id}')" class="text-sm bg-amber-600 hover:bg-amber-700 text-white px-4 py-2 rounded-xl font-semibold transition-colors duration-200 flex items-center gap-2">
+                <i class="fas fa-phone text-xs"></i> Owner Contact
+              </button>
+            </div>
+          </div>
+        </div>
+      `).join("");
+    }
+
+    // ── SEARCH / FILTER ───────────────────────────────────────────────────────────
+    window.filterProperties = function() {
+      const locVal = document.getElementById("filterLocation").value.trim().toLowerCase();
+      const typeVal = document.getElementById("filterType").value;
+      const listVal = document.getElementById("filterList").value;
+      filteredProperties = allProperties.filter(p => {
+        const locMatch = !locVal || p.location.toLowerCase().includes(locVal);
+        const typeMatch = !typeVal || p.category === typeVal;
+        const listMatch = !listVal || p.listType === listVal;
+        return locMatch && typeMatch && listMatch;
+      });
+      renderProperties(filteredProperties);
+    };
+
+    window.resetFilters = function() {
+      document.getElementById("filterLocation").value = "";
+      document.getElementById("filterType").value = "";
+      document.getElementById("filterList").value = "";
+      renderProperties(allProperties);
+    };
+
+    // ── GET OWNER CONTACT ─────────────────────────────────────────────────────────
+    window.getOwnerContact = function(propId) {
+      if (!currentUser) { toast("Please login to view contact","error"); showPage("pageLogin"); return; }
+      const modal = document.getElementById("contactModal");
+      modal.classList.remove("hidden");
+      document.getElementById("modalAdminPhone").textContent = ADMIN_PHONE;
+      document.getElementById("modalWaBtn").onclick = () => {
+        window.open(`https://wa.me/91${ADMIN_PHONE}?text=Hi, I'm interested in a property listed on Sivakasi Advertisements.`, "_blank");
+      };
+    };
+
+    window.closeContactModal = function() {
+      document.getElementById("contactModal").classList.add("hidden");
+    };
+
+    // ── POST BUYER REQUEST ────────────────────────────────────────────────────────
+    window.postBuyerRequest = async function() {
+      if (!currentUser) { toast("Please login first","error"); return; }
+      const budget   = document.getElementById("reqBudget").value.trim();
+      const location = document.getElementById("reqLocation").value.trim();
+      const propType = document.getElementById("reqType").value;
+      const purpose  = document.getElementById("reqPurpose").value;
+      const notes    = document.getElementById("reqNotes").value.trim();
+      if (!budget||!location) { toast("Fill required fields","error"); return; }
+      try {
+        await addDoc(collection(db,"requests"), {
+          buyerName: currentUser.name, buyerPhone: currentUser.phone,
+          budget, location, propType, purpose, notes,
+          createdAt: serverTimestamp()
+        });
+        toast("Request posted! Admin will contact you.");
+        document.getElementById("reqForm").reset();
+      } catch(e) { toast("Error: "+e.message,"error"); }
+    };
+
+    // ── BOOK SERVICE ──────────────────────────────────────────────────────────────
+    window.bookService = async function() {
+      if (!currentUser) { toast("Please login first","error"); return; }
+      const serviceType = document.getElementById("svcType").value;
+      const address     = document.getElementById("svcAddress").value.trim();
+      const date        = document.getElementById("svcDate").value;
+      const notes       = document.getElementById("svcNotes").value.trim();
+      if (!address||!date) { toast("Fill all required fields","error"); return; }
+      try {
+        await addDoc(collection(db,"services"), {
+          userName: currentUser.name, userPhone: currentUser.phone,
+          serviceType, address, date, notes,
+          createdAt: serverTimestamp(), status: "pending"
+        });
+        toast("Service booked! We'll confirm shortly.");
+        document.getElementById("svcForm").reset();
+      } catch(e) { toast("Error: "+e.message,"error"); }
+    };
+
+    // ── ADMIN: LOAD DATA ──────────────────────────────────────────────────────────
+    async function loadAdminData() {
+      await loadAdminProperties();
+      await loadAdminRequests();
+      await loadAdminServices();
+    }
+
+    async function loadAdminProperties() {
+      const cont = document.getElementById("adminPropList");
+      cont.innerHTML = `<p class="text-center text-gray-400 py-8"><i class="fas fa-spinner fa-spin"></i> Loading…</p>`;
+      try {
+        const snap = await getDocs(collection(db,"properties"));
+        const props = [];
+        snap.forEach(d => props.push({ id: d.id, ...d.data() }));
+        props.sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
+        if (!props.length) { cont.innerHTML = `<p class="text-gray-400 text-center py-8">No properties listed.</p>`; return; }
+        cont.innerHTML = props.map(p => `
+          <div class="admin-row flex flex-wrap items-start gap-4 bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+            <div class="flex-1 min-w-0">
+              <div class="flex flex-wrap gap-2 mb-1">
+                <span class="text-xs font-bold uppercase tracking-wider px-2 py-0.5 rounded-full ${p.listType==='rent'?'bg-sky-100 text-sky-700':'bg-rose-100 text-rose-700'}">${p.listType}</span>
+                <span class="text-xs font-semibold uppercase tracking-wide px-2 py-0.5 rounded-full bg-amber-100 text-amber-700">${p.category}</span>
+              </div>
+              <h4 class="font-bold text-gray-900">${p.title}</h4>
+              <p class="text-sm text-gray-500 mt-0.5 line-clamp-1">${p.desc}</p>
+              <p class="text-sm mt-1"><span class="text-gray-400">📍</span> ${p.location} &nbsp;|&nbsp; <span class="font-semibold text-amber-700">₹${Number(p.price).toLocaleString('en-IN')}</span></p>
+              <p class="text-sm mt-1 text-gray-500">Owner: <strong>${p.ownerName||"—"}</strong> &nbsp;📞 <strong class="text-emerald-700">${p.ownerPhone||"—"}</strong></p>
+            </div>
+            <button onclick="adminDeleteProperty('${p.id}')" class="shrink-0 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-4 py-2 rounded-lg text-sm font-semibold transition-colors">
+              <i class="fas fa-trash mr-1"></i> Delete
+            </button>
+          </div>
+        `).join("");
+      } catch(e) { cont.innerHTML = `<p class="text-red-500 text-center py-8">Error: ${e.message}</p>`; }
+    }
+
+    async function loadAdminRequests() {
+      const cont = document.getElementById("adminReqList");
+      cont.innerHTML = `<p class="text-center text-gray-400 py-8"><i class="fas fa-spinner fa-spin"></i> Loading…</p>`;
+      try {
+        const snap = await getDocs(collection(db,"requests"));
+        const reqs = [];
+        snap.forEach(d => reqs.push({ id: d.id, ...d.data() }));
+        reqs.sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
+        if (!reqs.length) { cont.innerHTML = `<p class="text-gray-400 text-center py-8">No buyer requests.</p>`; return; }
+        cont.innerHTML = reqs.map(r => `
+          <div class="admin-row flex flex-wrap items-start gap-4 bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+            <div class="flex-1 min-w-0">
+              <div class="flex gap-2 mb-1">
+                <span class="text-xs font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-purple-100 text-purple-700">${r.purpose||"buy"}</span>
+                <span class="text-xs font-semibold px-2 py-0.5 rounded-full bg-gray-100 text-gray-600">${r.propType}</span>
+              </div>
+              <p class="text-sm font-semibold text-gray-900">${r.buyerName} — <span class="text-emerald-700">📞 ${r.buyerPhone}</span></p>
+              <p class="text-sm text-gray-500 mt-0.5">📍 ${r.location} &nbsp;|&nbsp; Budget: <strong class="text-amber-700">₹${Number(r.budget).toLocaleString('en-IN')}</strong></p>
+              ${r.notes?`<p class="text-sm text-gray-400 mt-0.5 italic">"${r.notes}"</p>`:""}
+            </div>
+            <button onclick="adminDeleteRequest('${r.id}')" class="shrink-0 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-4 py-2 rounded-lg text-sm font-semibold transition-colors">
+              <i class="fas fa-trash mr-1"></i> Delete
+            </button>
+          </div>
+        `).join("");
+      } catch(e) { cont.innerHTML = `<p class="text-red-500 text-center py-8">Error: ${e.message}</p>`; }
+    }
+
+    async function loadAdminServices() {
+      const cont = document.getElementById("adminSvcList");
+      cont.innerHTML = `<p class="text-center text-gray-400 py-8"><i class="fas fa-spinner fa-spin"></i> Loading…</p>`;
+      try {
+        const snap = await getDocs(collection(db,"services"));
+        const svcs = [];
+        snap.forEach(d => svcs.push({ id: d.id, ...d.data() }));
+        svcs.sort((a,b)=>(b.createdAt?.seconds||0)-(a.createdAt?.seconds||0));
+        if (!svcs.length) { cont.innerHTML = `<p class="text-gray-400 text-center py-8">No service bookings.</p>`; return; }
+        const svcIcon = { plumbing:"🔧", electrical:"⚡", painting:"🎨", cleaning:"🧹" };
+        cont.innerHTML = svcs.map(s => `
+          <div class="admin-row flex flex-wrap items-start gap-4 bg-white rounded-xl p-4 border border-gray-100 shadow-sm">
+            <div class="flex-1 min-w-0">
+              <div class="flex gap-2 mb-1">
+                <span class="text-xs font-bold uppercase tracking-wider px-2 py-0.5 rounded-full bg-teal-100 text-teal-700">${svcIcon[s.serviceType]||"🔨"} ${s.serviceType}</span>
+                <span class="text-xs px-2 py-0.5 rounded-full ${s.status==='pending'?'bg-yellow-100 text-yellow-700':'bg-green-100 text-green-700'}">${s.status}</span>
+              </div>
+              <p class="text-sm font-semibold text-gray-900">${s.userName} — <span class="text-emerald-700">📞 ${s.userPhone}</span></p>
+              <p class="text-sm text-gray-500 mt-0.5">📍 ${s.address} &nbsp;|&nbsp; 📅 ${s.date}</p>
+              ${s.notes?`<p class="text-sm text-gray-400 mt-0.5 italic">"${s.notes}"</p>`:""}
+            </div>
+            <button onclick="adminDeleteService('${s.id}')" class="shrink-0 bg-red-50 hover:bg-red-100 text-red-600 border border-red-200 px-4 py-2 rounded-lg text-sm font-semibold transition-colors">
+              <i class="fas fa-trash mr-1"></i> Delete
+            </button>
+          </div>
+        `).join("");
+      } catch(e) { cont.innerHTML = `<p class="text-red-500 text-center py-8">Error: ${e.message}</p>`; }
+    }
+
+    window.adminDeleteProperty = async function(id) {
+      if (!confirm("Delete this property?")) return;
+      try { await deleteDoc(doc(db,"properties",id)); toast("Deleted"); loadAdminProperties(); loadProperties(); }
+      catch(e) { toast("Error: "+e.message,"error"); }
+    };
+    window.adminDeleteRequest = async function(id) {
+      if (!confirm("Delete this request?")) return;
+      try { await deleteDoc(doc(db,"requests",id)); toast("Deleted"); loadAdminRequests(); }
+      catch(e) { toast("Error: "+e.message,"error"); }
+    };
+    window.adminDeleteService = async function(id) {
+      if (!confirm("Delete this booking?")) return;
+      try { await deleteDoc(doc(db,"services",id)); toast("Deleted"); loadAdminServices(); }
+      catch(e) { toast("Error: "+e.message,"error"); }
+    };
+
+    // ── ADMIN TABS ────────────────────────────────────────────────────────────────
+    window.adminTab = function(tab) {
+      ["Props","Reqs","Svcs"].forEach(t => {
+        document.getElementById("adminTab"+t).classList.toggle("hidden", t!==tab);
+        document.getElementById("adminTabBtn"+t).classList.toggle("bg-amber-600","tab"+t!=="tab"+tab);
+        document.getElementById("adminTabBtn"+t).classList.toggle("text-white","tab"+t!=="tab"+tab);
+      });
+      document.getElementById("adminTab"+tab).classList.remove("hidden");
+      ["Props","Reqs","Svcs"].forEach(t => {
+        const btn = document.getElementById("adminTabBtn"+t);
+        if (t===tab) { btn.className="px-5 py-2 rounded-xl text-sm font-semibold bg-amber-600 text-white"; }
+        else { btn.className="px-5 py-2 rounded-xl text-sm font-semibold bg-white text-gray-600 border border-gray-200 hover:border-amber-300"; }
+      });
+    };
+
+    // ── INIT ──────────────────────────────────────────────────────────────────────
+    const saved = localStorage.getItem("sivaUser");
+    if (saved) {
+      try { currentUser = JSON.parse(saved); } catch(e){}
+    }
+    updateNav();
+
+    if (currentUser) { showPage("pageHome"); loadProperties(); }
+    else showPage("pageLogin");
+
+    // Nav functions
+    window.goHome = function() { showPage("pageHome"); if(allProperties.length===0) loadProperties(); };
+    window.goPostProp = function() { if (!currentUser) { toast("Please login first","error"); showPage("pageLogin"); return; } showPage("pagePost"); };
+    window.goRequests = function() { if (!currentUser) { toast("Please login first","error"); showPage("pageLogin"); return; } showPage("pageRequests"); };
+    window.goServices = function() { if (!currentUser) { toast("Please login first","error"); showPage("pageLogin"); return; } showPage("pageServices"); };
+    window.goAdminLogin = function() { showPage("pageAdminLogin"); };
+    window.goLogin = function() { showPage("pageLogin"); };
+
+    // Mobile menu
+    window.toggleMobileMenu = function() {
+      document.getElementById("mobileMenu").classList.toggle("hidden");
+    };
+
+  </script>
+
+  <style>
+    :root {
+      --gold: #b45309;
+      --gold-light: #fbbf24;
+      --warm: #fffbf0;
+    }
+    body { font-family: 'DM Sans', sans-serif; background: var(--warm); }
+    .brand { font-family: 'Playfair Display', serif; }
+    .hero-bg {
+      background: linear-gradient(135deg, #1c1007 0%, #3d1f00 40%, #7c3204 70%, #b45309 100%);
+    }
+    .line-clamp-1 { overflow:hidden; display:-webkit-box; -webkit-line-clamp:1; -webkit-box-orient:vertical; }
+    .line-clamp-2 { overflow:hidden; display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+    .prop-card { transition: transform .2s ease, box-shadow .2s ease; }
+    .prop-card:hover { transform: translateY(-4px); }
+    .page { animation: fadeIn .25s ease; }
+    @keyframes fadeIn { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:translateY(0); } }
+    input, select, textarea {
+      transition: border-color .2s, box-shadow .2s;
+    }
+    input:focus, select:focus, textarea:focus {
+      outline: none;
+      border-color: #b45309;
+      box-shadow: 0 0 0 3px rgba(180,83,9,.12);
+    }
+    .nav-link { transition: color .15s; }
+    .nav-link:hover { color: #fbbf24; }
+    /* Scrollbar */
+    ::-webkit-scrollbar { width: 6px; }
+    ::-webkit-scrollbar-track { background: #fef3c7; }
+    ::-webkit-scrollbar-thumb { background: #b45309; border-radius: 3px; }
+  </style>
+</head>
+<body class="min-h-screen">
+
+<!-- ░░ TOAST ░░ -->
+<div id="toast" class="fixed bottom-6 left-1/2 -translate-x-1/2 z-[999] px-6 py-3 rounded-full text-white font-medium text-sm shadow-2xl opacity-0 transition-all duration-300 pointer-events-none bg-emerald-600"></div>
+
+<!-- ░░ NAVBAR ░░ -->
+<nav class="hero-bg text-white sticky top-0 z-50 shadow-2xl">
+  <div class="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
+    <button onclick="goHome()" class="flex items-center gap-3 group">
+      <div class="w-10 h-10 rounded-xl bg-amber-500/30 border border-amber-400/40 flex items-center justify-center">
+        <i class="fas fa-building text-amber-300 text-lg"></i>
+      </div>
+      <div class="text-left">
+        <div class="brand text-lg font-bold leading-tight text-amber-200">Sivakasi</div>
+        <div class="text-xs text-amber-400/80 -mt-0.5 tracking-widest uppercase">Advertisements</div>
+      </div>
+    </button>
+
+    <!-- Desktop nav -->
+    <div class="hidden md:flex items-center gap-1">
+      <button onclick="goHome()" class="nav-link text-amber-100 hover:text-amber-300 px-4 py-2 rounded-lg text-sm font-medium"><i class="fas fa-home mr-1.5"></i>Listings</button>
+      <button onclick="goPostProp()" class="nav-link text-amber-100 hover:text-amber-300 px-4 py-2 rounded-lg text-sm font-medium"><i class="fas fa-plus-circle mr-1.5"></i>Post Property</button>
+      <button onclick="goRequests()" class="nav-link text-amber-100 hover:text-amber-300 px-4 py-2 rounded-lg text-sm font-medium"><i class="fas fa-hand-holding-usd mr-1.5"></i>Buy/Rent</button>
+      <button onclick="goServices()" class="nav-link text-amber-100 hover:text-amber-300 px-4 py-2 rounded-lg text-sm font-medium"><i class="fas fa-tools mr-1.5"></i>Services</button>
+    </div>
+
+    <div class="flex items-center gap-2">
+      <!-- Guest -->
+      <div id="navGuest" class="flex items-center gap-2">
+        <button onclick="goLogin()" class="bg-amber-500 hover:bg-amber-400 text-white px-4 py-2 rounded-xl text-sm font-semibold transition-colors"><i class="fas fa-user mr-1.5"></i>Login</button>
+      </div>
+      <!-- User -->
+      <div id="navUser" class="hidden flex items-center gap-2">
+        <span class="text-amber-200 text-sm hidden sm:block">👋 <span id="navUserName" class="font-semibold"></span></span>
+        <button onclick="logoutUser()" class="bg-amber-800/60 hover:bg-amber-700/80 border border-amber-600/40 text-amber-200 px-3 py-2 rounded-xl text-sm font-medium transition-colors"><i class="fas fa-sign-out-alt"></i></button>
+      </div>
+      <!-- Admin -->
+      <div id="navAdmin" class="hidden flex items-center gap-2">
+        <span class="text-amber-300 text-sm font-semibold"><i class="fas fa-shield-halved mr-1"></i>Admin</span>
+        <button onclick="logoutAdmin()" class="bg-red-700/60 hover:bg-red-600/80 border border-red-500/40 text-red-200 px-3 py-2 rounded-xl text-sm font-medium transition-colors"><i class="fas fa-sign-out-alt"></i></button>
+      </div>
+      <!-- Mobile hamburger -->
+      <button onclick="toggleMobileMenu()" class="md:hidden p-2 text-amber-200 hover:text-white">
+        <i class="fas fa-bars text-lg"></i>
+      </button>
+    </div>
+  </div>
+  <!-- Mobile menu -->
+  <div id="mobileMenu" class="hidden md:hidden border-t border-amber-700/40 bg-amber-950/95 px-4 py-3 flex flex-col gap-1">
+    <button onclick="goHome();toggleMobileMenu()" class="text-amber-100 text-sm py-2.5 px-3 rounded-lg hover:bg-amber-800/40 text-left"><i class="fas fa-home mr-2 w-5 text-center"></i>Listings</button>
+    <button onclick="goPostProp();toggleMobileMenu()" class="text-amber-100 text-sm py-2.5 px-3 rounded-lg hover:bg-amber-800/40 text-left"><i class="fas fa-plus-circle mr-2 w-5 text-center"></i>Post Property</button>
+    <button onclick="goRequests();toggleMobileMenu()" class="text-amber-100 text-sm py-2.5 px-3 rounded-lg hover:bg-amber-800/40 text-left"><i class="fas fa-hand-holding-usd mr-2 w-5 text-center"></i>Buy / Rent Request</button>
+    <button onclick="goServices();toggleMobileMenu()" class="text-amber-100 text-sm py-2.5 px-3 rounded-lg hover:bg-amber-800/40 text-left"><i class="fas fa-tools mr-2 w-5 text-center"></i>Maintenance Services</button>
+    <button onclick="goAdminLogin();toggleMobileMenu()" class="text-amber-400 text-sm py-2.5 px-3 rounded-lg hover:bg-amber-800/40 text-left"><i class="fas fa-shield-halved mr-2 w-5 text-center"></i>Admin Panel</button>
+  </div>
+</nav>
+
+<!-- ░░░░░░░░░░░░ PAGE: LOGIN ░░░░░░░░░░░░ -->
+<div id="pageLogin" class="page hidden min-h-screen flex flex-col">
+  <!-- Hero -->
+  <div class="hero-bg py-20 px-4 text-center relative overflow-hidden">
+    <div class="absolute inset-0 opacity-10" style="background-image:repeating-linear-gradient(45deg,#fff 0,#fff 1px,transparent 0,transparent 50%);background-size:20px 20px;"></div>
+    <div class="relative max-w-2xl mx-auto">
+      <div class="inline-flex items-center gap-2 bg-amber-500/20 border border-amber-400/30 text-amber-300 text-xs font-semibold uppercase tracking-widest px-4 py-1.5 rounded-full mb-6">
+        <i class="fas fa-map-marker-alt"></i> Sivakasi, Tamil Nadu
+      </div>
+      <h1 class="brand text-4xl md:text-6xl font-black text-white leading-tight">
+        Sivakasi<br/><span class="text-amber-400">Advertisements</span>
+      </h1>
+      <p class="text-amber-200/80 mt-4 text-lg max-w-lg mx-auto leading-relaxed">
+        Find, post & manage properties — land, houses, offices & factories across Sivakasi and nearby areas.
+      </p>
+      <div class="flex flex-wrap justify-center gap-4 mt-8 text-sm text-amber-300/70">
+        <span class="flex items-center gap-1.5"><i class="fas fa-check-circle text-amber-400"></i> Free Listings</span>
+        <span class="flex items-center gap-1.5"><i class="fas fa-check-circle text-amber-400"></i> Verified Buyers</span>
+        <span class="flex items-center gap-1.5"><i class="fas fa-check-circle text-amber-400"></i> Quick Contact</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Login card -->
+  <div class="flex-1 flex items-center justify-center px-4 py-12 bg-amber-50">
+    <div class="bg-white rounded-3xl shadow-2xl border border-amber-100 w-full max-w-md p-8">
+      <div class="text-center mb-8">
+        <div class="w-16 h-16 rounded-2xl bg-amber-100 flex items-center justify-center mx-auto mb-4">
+          <i class="fas fa-user-circle text-amber-600 text-3xl"></i>
+        </div>
+        <h2 class="brand text-2xl font-bold text-gray-900">Quick Login</h2>
+        <p class="text-gray-400 text-sm mt-1">No password needed — just your name & mobile</p>
+      </div>
+      <div class="space-y-4">
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Your Name</label>
+          <input id="loginName" type="text" placeholder="e.g. Ramesh Kumar" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-gray-800 placeholder-gray-300 text-sm bg-gray-50" />
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Mobile Number</label>
+          <input id="loginPhone" type="tel" maxlength="10" placeholder="10-digit mobile" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-gray-800 placeholder-gray-300 text-sm bg-gray-50" />
+        </div>
+        <button onclick="loginUser()" class="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-3.5 rounded-xl mt-2 transition-colors duration-200 text-base">
+          <i class="fas fa-arrow-right-to-bracket mr-2"></i>Enter & Explore
+        </button>
+      </div>
+      <div class="mt-6 text-center">
+        <button onclick="goAdminLogin()" class="text-xs text-gray-300 hover:text-amber-600 transition-colors">Admin Access →</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ░░░░░░░░░░░░ PAGE: HOME / LISTINGS ░░░░░░░░░░░░ -->
+<div id="pageHome" class="page hidden">
+  <!-- Hero banner -->
+  <div class="hero-bg py-14 px-4 relative overflow-hidden">
+    <div class="absolute inset-0 opacity-5" style="background-image:repeating-linear-gradient(0deg,#fff 0,#fff 1px,transparent 0,transparent 30px),repeating-linear-gradient(90deg,#fff 0,#fff 1px,transparent 0,transparent 30px);"></div>
+    <div class="relative max-w-4xl mx-auto text-center">
+      <h1 class="brand text-3xl md:text-5xl font-black text-white">Properties in <span class="text-amber-400">Sivakasi</span></h1>
+      <p class="text-amber-200/70 mt-2 text-base">Browse land, houses, offices & factories for sale and rent</p>
+      <!-- Filter bar -->
+      <div class="mt-8 bg-white/10 backdrop-blur-sm border border-white/20 rounded-2xl p-4 flex flex-wrap gap-3 items-end">
+        <div class="flex-1 min-w-[140px]">
+          <label class="block text-amber-300 text-xs font-semibold uppercase tracking-wider mb-1.5">Location</label>
+          <input id="filterLocation" type="text" placeholder="Search location…" class="w-full bg-white/20 border border-white/30 rounded-xl px-3 py-2.5 text-white placeholder-amber-200/50 text-sm focus:bg-white/30" oninput="filterProperties()" />
+        </div>
+        <div class="flex-1 min-w-[120px]">
+          <label class="block text-amber-300 text-xs font-semibold uppercase tracking-wider mb-1.5">Category</label>
+          <select id="filterType" onchange="filterProperties()" class="w-full bg-white/20 border border-white/30 rounded-xl px-3 py-2.5 text-white text-sm focus:bg-white/30">
+            <option value="">All Types</option>
+            <option value="land">Land</option>
+            <option value="house">House</option>
+            <option value="office">Office</option>
+            <option value="factory">Factory</option>
+          </select>
+        </div>
+        <div class="flex-1 min-w-[120px]">
+          <label class="block text-amber-300 text-xs font-semibold uppercase tracking-wider mb-1.5">Listing</label>
+          <select id="filterList" onchange="filterProperties()" class="w-full bg-white/20 border border-white/30 rounded-xl px-3 py-2.5 text-white text-sm focus:bg-white/30">
+            <option value="">Sale & Rent</option>
+            <option value="sale">For Sale</option>
+            <option value="rent">For Rent</option>
+          </select>
+        </div>
+        <button onclick="resetFilters()" class="bg-amber-500/80 hover:bg-amber-400 text-white border border-amber-400/50 px-4 py-2.5 rounded-xl text-sm font-semibold transition-colors">
+          <i class="fas fa-rotate-left mr-1"></i> Reset
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Cards -->
+  <div class="max-w-7xl mx-auto px-4 py-10">
+    <div id="propCards" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+      <div class="col-span-full text-center py-16 text-amber-700">
+        <i class="fas fa-spinner fa-spin text-3xl"></i>
+        <p class="mt-3 font-medium">Loading listings…</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- CTA strip -->
+  <div class="bg-amber-700 text-white py-10 px-4 text-center">
+    <h3 class="brand text-2xl font-bold mb-2">Want to post your property?</h3>
+    <p class="text-amber-200 text-sm mb-5">It's free, fast and reaches thousands of buyers in Sivakasi.</p>
+    <button onclick="goPostProp()" class="bg-white text-amber-700 font-bold px-8 py-3 rounded-xl hover:bg-amber-50 transition-colors">
+      <i class="fas fa-plus mr-2"></i>Post Property Now
+    </button>
+  </div>
+</div>
+
+<!-- ░░░░░░░░░░░░ PAGE: POST PROPERTY ░░░░░░░░░░░░ -->
+<div id="pagePost" class="page hidden max-w-2xl mx-auto px-4 py-10">
+  <button onclick="goHome()" class="flex items-center gap-2 text-amber-700 hover:text-amber-900 text-sm font-medium mb-6 group">
+    <i class="fas fa-arrow-left group-hover:-translate-x-1 transition-transform"></i> Back to Listings
+  </button>
+  <div class="bg-white rounded-3xl shadow-xl border border-amber-100 p-8">
+    <div class="mb-8">
+      <h2 class="brand text-3xl font-bold text-gray-900">Post a Property</h2>
+      <p class="text-gray-400 text-sm mt-1">Fill in the details — we'll display it to buyers & tenants.</p>
+    </div>
+    <form id="propForm" class="space-y-5" onsubmit="return false">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <div class="sm:col-span-2">
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Property Title *</label>
+          <input id="propTitle" type="text" placeholder="e.g. 3 Cent Land near Bus Stand" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50" />
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Category *</label>
+          <select id="propCategory" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50">
+            <option value="land">🌿 Land / Plot</option>
+            <option value="house">🏠 House / Villa</option>
+            <option value="office">💼 Office / Shop</option>
+            <option value="factory">🏭 Factory / Warehouse</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Listing Type *</label>
+          <select id="propListType" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50">
+            <option value="sale">🏷 For Sale</option>
+            <option value="rent">🏠 For Rent</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Price (₹) *</label>
+          <input id="propPrice" type="number" placeholder="e.g. 2500000" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50" />
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Location *</label>
+          <input id="propLocation" type="text" placeholder="e.g. Sivakasi Town, Aruppukottai Rd" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50" />
+        </div>
+        <div class="sm:col-span-2">
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Description *</label>
+          <textarea id="propDesc" rows="4" placeholder="Describe the property — area, features, nearby landmarks…" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50 resize-none"></textarea>
+        </div>
+      </div>
+      <div class="bg-amber-50 border border-amber-200 rounded-xl p-4 text-sm text-amber-700 flex gap-3 items-start">
+        <i class="fas fa-lock mt-0.5 text-amber-500"></i>
+        <p>Your phone number is stored securely and <strong>never shown</strong> to buyers. Interested parties contact you through our admin.</p>
+      </div>
+      <button onclick="postProperty()" class="w-full bg-amber-600 hover:bg-amber-700 text-white font-bold py-4 rounded-xl transition-colors text-base">
+        <i class="fas fa-paper-plane mr-2"></i>Submit Listing
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- ░░░░░░░░░░░░ PAGE: BUYER/TENANT REQUESTS ░░░░░░░░░░░░ -->
+<div id="pageRequests" class="page hidden max-w-2xl mx-auto px-4 py-10">
+  <button onclick="goHome()" class="flex items-center gap-2 text-amber-700 hover:text-amber-900 text-sm font-medium mb-6 group">
+    <i class="fas fa-arrow-left group-hover:-translate-x-1 transition-transform"></i> Back to Listings
+  </button>
+  <div class="bg-white rounded-3xl shadow-xl border border-amber-100 p-8">
+    <div class="mb-8">
+      <div class="w-14 h-14 rounded-2xl bg-purple-100 flex items-center justify-center mb-4">
+        <i class="fas fa-hand-holding-usd text-purple-600 text-2xl"></i>
+      </div>
+      <h2 class="brand text-3xl font-bold text-gray-900">Buyer / Tenant Request</h2>
+      <p class="text-gray-400 text-sm mt-1">Tell us what you're looking for. Our team will match you.</p>
+    </div>
+    <form id="reqForm" class="space-y-5" onsubmit="return false">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Purpose *</label>
+          <select id="reqPurpose" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50">
+            <option value="buy">Buy Property</option>
+            <option value="rent">Rent / Lease</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Property Type *</label>
+          <select id="reqType" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50">
+            <option value="land">Land / Plot</option>
+            <option value="house">House / Villa</option>
+            <option value="office">Office / Shop</option>
+            <option value="factory">Factory / Warehouse</option>
+            <option value="any">Any</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Budget (₹) *</label>
+          <input id="reqBudget" type="number" placeholder="e.g. 1500000" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50" />
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Preferred Location *</label>
+          <input id="reqLocation" type="text" placeholder="e.g. Sivakasi, Virudhunagar" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50" />
+        </div>
+        <div class="sm:col-span-2">
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Additional Notes</label>
+          <textarea id="reqNotes" rows="3" placeholder="Any specific requirements…" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50 resize-none"></textarea>
+        </div>
+      </div>
+      <button onclick="postBuyerRequest()" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-4 rounded-xl transition-colors text-base">
+        <i class="fas fa-paper-plane mr-2"></i>Submit Request
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- ░░░░░░░░░░░░ PAGE: MAINTENANCE SERVICES ░░░░░░░░░░░░ -->
+<div id="pageServices" class="page hidden max-w-2xl mx-auto px-4 py-10">
+  <button onclick="goHome()" class="flex items-center gap-2 text-amber-700 hover:text-amber-900 text-sm font-medium mb-6 group">
+    <i class="fas fa-arrow-left group-hover:-translate-x-1 transition-transform"></i> Back to Listings
+  </button>
+
+  <!-- Service highlights -->
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-8">
+    <div class="bg-white rounded-2xl shadow-sm border border-sky-100 p-4 text-center">
+      <div class="text-3xl mb-2">🔧</div>
+      <div class="text-sm font-semibold text-gray-700">Plumbing</div>
+    </div>
+    <div class="bg-white rounded-2xl shadow-sm border border-yellow-100 p-4 text-center">
+      <div class="text-3xl mb-2">⚡</div>
+      <div class="text-sm font-semibold text-gray-700">Electrical</div>
+    </div>
+    <div class="bg-white rounded-2xl shadow-sm border border-red-100 p-4 text-center">
+      <div class="text-3xl mb-2">🎨</div>
+      <div class="text-sm font-semibold text-gray-700">Painting</div>
+    </div>
+    <div class="bg-white rounded-2xl shadow-sm border border-green-100 p-4 text-center">
+      <div class="text-3xl mb-2">🧹</div>
+      <div class="text-sm font-semibold text-gray-700">Cleaning</div>
+    </div>
+  </div>
+
+  <div class="bg-white rounded-3xl shadow-xl border border-amber-100 p-8">
+    <div class="mb-8">
+      <div class="w-14 h-14 rounded-2xl bg-teal-100 flex items-center justify-center mb-4">
+        <i class="fas fa-wrench text-teal-600 text-2xl"></i>
+      </div>
+      <h2 class="brand text-3xl font-bold text-gray-900">Book a Service</h2>
+      <p class="text-gray-400 text-sm mt-1">Professional maintenance services at your doorstep.</p>
+    </div>
+    <form id="svcForm" class="space-y-5" onsubmit="return false">
+      <div class="grid grid-cols-1 sm:grid-cols-2 gap-5">
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Service Type *</label>
+          <select id="svcType" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50">
+            <option value="plumbing">🔧 Plumbing</option>
+            <option value="electrical">⚡ Electrical</option>
+            <option value="painting">🎨 Painting</option>
+            <option value="cleaning">🧹 Cleaning</option>
+          </select>
+        </div>
+        <div>
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Preferred Date *</label>
+          <input id="svcDate" type="date" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50" />
+        </div>
+        <div class="sm:col-span-2">
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Service Address *</label>
+          <input id="svcAddress" type="text" placeholder="Full address where service is needed" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50" />
+        </div>
+        <div class="sm:col-span-2">
+          <label class="block text-sm font-semibold text-gray-600 mb-1.5">Additional Notes</label>
+          <textarea id="svcNotes" rows="3" placeholder="Describe the issue or special instructions…" class="w-full border border-gray-200 rounded-xl px-4 py-3 text-sm bg-gray-50 resize-none"></textarea>
+        </div>
+      </div>
+      <button onclick="bookService()" class="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-4 rounded-xl transition-colors text-base">
+        <i class="fas fa-calendar-check mr-2"></i>Book Service
+      </button>
+    </form>
+  </div>
+</div>
+
+<!-- ░░░░░░░░░░░░ PAGE: ADMIN LOGIN ░░░░░░░░░░░░ -->
+<div id="pageAdminLogin" class="page hidden min-h-screen flex items-center justify-center px-4 py-16 bg-gray-950">
+  <div class="bg-gray-900 rounded-3xl shadow-2xl border border-gray-700 w-full max-w-sm p-8 text-center">
+    <div class="w-16 h-16 rounded-2xl bg-amber-600/20 border border-amber-500/30 flex items-center justify-center mx-auto mb-6">
+      <i class="fas fa-shield-halved text-amber-400 text-2xl"></i>
+    </div>
+    <h2 class="brand text-2xl font-bold text-white mb-1">Admin Access</h2>
+    <p class="text-gray-500 text-sm mb-7">Restricted panel — authorised personnel only</p>
+    <div class="space-y-4 text-left">
+      <div>
+        <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Username</label>
+        <input id="adminUser" type="text" placeholder="admin" class="w-full bg-gray-800 border border-gray-600 rounded-xl px-4 py-3 text-white placeholder-gray-500 text-sm focus:border-amber-500" />
+      </div>
+      <div>
+        <label class="block text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">Password</label>
+        <input id="adminPass" type="password" placeholder="••••••••" class="w-full bg-gray-800 border border-gray-600 rounded-xl px-4 py-3 text-white placeholder-gray-500 text-sm focus:border-amber-500" onkeydown="if(event.key==='Enter')loginAdmin()" />
+      </div>
+      <button onclick="loginAdmin()" class="w-full bg-amber-600 hover:bg-amber-500 text-white font-bold py-3.5 rounded-xl mt-1 transition-colors">
+        <i class="fas fa-unlock mr-2"></i>Login to Admin Panel
+      </button>
+    </div>
+    <button onclick="goLogin()" class="mt-5 text-xs text-gray-600 hover:text-gray-400 transition-colors">← Back to main site</button>
+  </div>
+</div>
+
+<!-- ░░░░░░░░░░░░ PAGE: ADMIN PANEL ░░░░░░░░░░░░ -->
+<div id="pageAdmin" class="page hidden min-h-screen bg-gray-50">
+  <!-- Admin header -->
+  <div class="bg-gray-900 py-6 px-4">
+    <div class="max-w-5xl mx-auto flex flex-wrap items-center justify-between gap-4">
+      <div>
+        <h2 class="brand text-2xl font-bold text-white">Admin Panel</h2>
+        <p class="text-gray-400 text-sm mt-0.5">Sivakasi Advertisements — Control Centre</p>
+      </div>
+      <div class="flex items-center gap-3">
+        <div class="bg-amber-600/20 border border-amber-500/30 rounded-xl px-4 py-2 text-sm text-amber-300 flex items-center gap-2">
+          <i class="fas fa-phone text-xs"></i> Admin: 7904216920
+        </div>
+        <button onclick="logoutAdmin()" class="bg-red-700/50 hover:bg-red-700 border border-red-600/40 text-red-300 hover:text-white px-4 py-2 rounded-xl text-sm font-semibold transition-colors">
+          <i class="fas fa-sign-out-alt mr-1.5"></i>Logout
+        </button>
+      </div>
+    </div>
+  </div>
+
+  <div class="max-w-5xl mx-auto px-4 py-8">
+    <!-- Tabs -->
+    <div class="flex flex-wrap gap-2 mb-6">
+      <button id="adminTabBtnProps" onclick="adminTab('Props')" class="px-5 py-2 rounded-xl text-sm font-semibold bg-amber-600 text-white">
+        <i class="fas fa-building mr-1.5"></i>Properties
+      </button>
+      <button id="adminTabBtnReqs" onclick="adminTab('Reqs')" class="px-5 py-2 rounded-xl text-sm font-semibold bg-white text-gray-600 border border-gray-200 hover:border-amber-300">
+        <i class="fas fa-hand-holding-usd mr-1.5"></i>Buyer Requests
+      </button>
+      <button id="adminTabBtnSvcs" onclick="adminTab('Svcs')" class="px-5 py-2 rounded-xl text-sm font-semibold bg-white text-gray-600 border border-gray-200 hover:border-amber-300">
+        <i class="fas fa-tools mr-1.5"></i>Service Bookings
+      </button>
+    </div>
+
+    <!-- Properties tab -->
+    <div id="adminTabProps">
+      <h3 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+        <i class="fas fa-building text-amber-600"></i> All Property Listings
+        <span class="text-xs font-normal text-gray-400 ml-1">(owner phones visible here only)</span>
+      </h3>
+      <div id="adminPropList" class="space-y-3">
+        <p class="text-center text-gray-400 py-8"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
+      </div>
+    </div>
+
+    <!-- Requests tab -->
+    <div id="adminTabReqs" class="hidden">
+      <h3 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+        <i class="fas fa-hand-holding-usd text-purple-600"></i> Buyer & Tenant Requests
+      </h3>
+      <div id="adminReqList" class="space-y-3">
+        <p class="text-center text-gray-400 py-8"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
+      </div>
+    </div>
+
+    <!-- Services tab -->
+    <div id="adminTabSvcs" class="hidden">
+      <h3 class="text-lg font-bold text-gray-800 mb-4 flex items-center gap-2">
+        <i class="fas fa-tools text-teal-600"></i> Maintenance Service Bookings
+      </h3>
+      <div id="adminSvcList" class="space-y-3">
+        <p class="text-center text-gray-400 py-8"><i class="fas fa-spinner fa-spin"></i> Loading…</p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ░░░░░░░░░░░░ CONTACT MODAL ░░░░░░░░░░░░ -->
+<div id="contactModal" class="hidden fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center p-4" onclick="if(event.target===this)closeContactModal()">
+  <div class="bg-white rounded-3xl shadow-2xl border border-amber-100 w-full max-w-sm p-8 text-center relative">
+    <button onclick="closeContactModal()" class="absolute top-4 right-4 text-gray-300 hover:text-gray-600 text-xl transition-colors">
+      <i class="fas fa-xmark"></i>
+    </button>
+    <div class="w-16 h-16 rounded-full bg-green-100 flex items-center justify-center mx-auto mb-5">
+      <i class="fas fa-phone text-green-600 text-2xl"></i>
+    </div>
+    <h3 class="brand text-2xl font-bold text-gray-900 mb-1">Get Owner Contact</h3>
+    <p class="text-gray-400 text-sm mb-6">Connect with us to reach the property owner</p>
+    <div class="bg-amber-50 border border-amber-200 rounded-2xl py-4 px-6 mb-6">
+      <p class="text-xs text-amber-600 font-semibold uppercase tracking-wider mb-1">Admin / Agent</p>
+      <p class="text-3xl font-black text-amber-700 tracking-widest" id="modalAdminPhone">7904216920</p>
+    </div>
+    <button id="modalWaBtn" class="w-full bg-green-500 hover:bg-green-600 text-white font-bold py-3.5 rounded-xl transition-colors flex items-center justify-center gap-3 text-base">
+      <i class="fab fa-whatsapp text-xl"></i> Chat on WhatsApp
+    </button>
+    <p class="text-xs text-gray-400 mt-4">We'll connect you with the property owner directly.</p>
+  </div>
+</div>
+
+<!-- ░░░░░░░░░░░░ FOOTER ░░░░░░░░░░░░ -->
+<footer class="hero-bg text-amber-300/60 text-center py-8 px-4 text-sm mt-8">
+  <p class="brand text-amber-400 font-bold text-lg mb-1">Sivakasi Advertisements</p>
+  <p>© 2024 · Properties, Services & More · Sivakasi, Tamil Nadu</p>
+  <p class="mt-1 text-xs">Admin: <span class="text-amber-400">7904216920</span> &nbsp;|&nbsp;
+    <a href="https://wa.me/917904216920" target="_blank" class="text-green-400 hover:text-green-300 transition-colors"><i class="fab fa-whatsapp mr-1"></i>WhatsApp</a>
+  </p>
+  <div class="mt-4 flex justify-center gap-6 text-xs">
+    <button onclick="goAdminLogin()" class="text-amber-700 hover:text-amber-500 transition-colors">Admin Panel</button>
+  </div>
+</footer>
+
+</body>
+</html>
